@@ -8,6 +8,7 @@
 #   PROMPT        the question (single mode)
 #   PROMPTS_FILE  a repo path: .txt one prompt per line, or .jsonl {"prompt": ..., "system": ...} (batch mode)
 #   SYSTEM MAX_TOKENS TEMPERATURE THINKING(true/false)
+#   ABLITERATED   true for an abliterated row: ask.py then writes and prints the scored table only
 #   HF_TOKEN      optional
 #   THREADS CTX PORT  optional tuning
 # The disk / llama.cpp / download parts mirror bench/run_bench.sh on purpose: the
@@ -22,7 +23,8 @@ PORT="${PORT:-8080}"
 PROMPT="${PROMPT:-}"
 PROMPTS_FILE="${PROMPTS_FILE:-}"
 THINKING="${THINKING:-false}"
-export MODEL_NAME QUANT PROMPT PROMPTS_FILE SYSTEM MAX_TOKENS TEMPERATURE THINKING PORT
+ABLITERATED="${ABLITERATED:-false}"
+export MODEL_NAME QUANT PROMPT PROMPTS_FILE SYSTEM MAX_TOKENS TEMPERATURE THINKING PORT ABLITERATED
 
 if [ -z "$PROMPT" ] && [ -z "$PROMPTS_FILE" ]; then
   echo "::error::give a prompt or a prompts_file"; exit 1
@@ -40,7 +42,7 @@ mkdir -p "$MODEL_DIR" "$TOOL_DIR" "$OUT"
 avail_gb() { df --output=avail -B1 "$WORK" | tail -1 | awk '{printf "%.1f", $1/1e9}'; }
 lt() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a < b)}'; }
 
-echo "== ask ${MODEL_NAME} ${QUANT}  (${MODEL_REPO}/${MODEL_FILE}, ~${SIZE_GB} GB, llama.cpp ${LLAMA_CPP_TAG}, ${THREADS} threads, ctx ${CTX}, thinking ${THINKING})"
+echo "== ask ${MODEL_NAME} ${QUANT}  (${MODEL_REPO}/${MODEL_FILE}, ~${SIZE_GB} GB, llama.cpp ${LLAMA_CPP_TAG}, ${THREADS} threads, ctx ${CTX}, thinking ${THINKING}, abliterated ${ABLITERATED})"
 
 # --- disk ---------------------------------------------------------------------
 MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
