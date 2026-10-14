@@ -123,7 +123,10 @@ def merge(rows):
         oom = [r for r in bad if is_oom(r)]
         pp, tg = stat(nums(ok, "pp512_tps")), stat(nums(ok, "tg128_tps"))
         ppl, hs = stat(nums(ok, "ppl"), 3), stat(nums(ok, "hellaswag_acc"), 1)
-        rss = nums(members, "peak_rss_gb")
+        # Rows of run 38638331177 folded HellaSwag (-c 2048 -b 2048, 13-16 GB) into peak_rss_gb; they have
+        # hellaswag_acc but no hellaswag_rss_gb field. Their RAM is not the model's: leave it out of the max.
+        rss = nums([r for r in members if not (r.get("hellaswag_acc") is not None and "hellaswag_rss_gb" not in r)],
+                   "peak_rss_gb")
         g = {
             "model": k[0], "quant": k[1], "cpu_family": k[2], "llama_cpp_tag": k[3],
             "n_runs": len(members), "n_ok": len(ok), "n_failed": len(bad) - len(oom), "n_oom": len(oom),

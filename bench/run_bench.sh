@@ -50,14 +50,14 @@ echo "host CPU: ${CPU_MODEL:-unknown}"
 STATUS="failed"; ERROR=""
 PP_TPS=""; TG_TPS=""; PPL=""; PPL_ERR=""; PEAK_RSS_GB=""; FILE_GB=""
 DOWNLOAD_S=""; BENCH_S=""; PPL_S=""; CPU_INFO=""
-HS_ACC=""; HS_LO=""; HS_HI=""; HS_N=""; HS_S=""; HS_NOTE=""
+HS_ACC=""; HS_LO=""; HS_HI=""; HS_N=""; HS_S=""; HS_NOTE=""; HS_RSS_GB=""
 
 write_result() {
   export R_STATUS="$STATUS" R_ERROR="$ERROR" R_PP="$PP_TPS" R_TG="$TG_TPS" \
          R_PPL="$PPL" R_PPL_ERR="$PPL_ERR" R_RSS="$PEAK_RSS_GB" R_FILE_GB="$FILE_GB" \
          R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO" \
          R_CPU_MODEL="$CPU_MODEL" \
-         R_HS_ACC="$HS_ACC" R_HS_LO="$HS_LO" R_HS_HI="$HS_HI" R_HS_N="$HS_N" R_HS_S="$HS_S" R_HS_NOTE="$HS_NOTE"
+         R_HS_ACC="$HS_ACC" R_HS_LO="$HS_LO" R_HS_HI="$HS_HI" R_HS_N="$HS_N" R_HS_S="$HS_S" R_HS_NOTE="$HS_NOTE" R_HS_RSS="$HS_RSS_GB"
   python3 - "$RESULT" <<'PY'
 import datetime, json, os, sys
 e = os.environ
@@ -76,6 +76,7 @@ out = {
     "ppl": num("R_PPL"), "ppl_err": num("R_PPL_ERR"),
     "hellaswag_acc": num("R_HS_ACC"), "hellaswag_ci_lo": num("R_HS_LO"), "hellaswag_ci_hi": num("R_HS_HI"),
     "hellaswag_tasks": num("R_HS_N"), "hellaswag_s": num("R_HS_S"), "hellaswag_note": e.get("R_HS_NOTE", ""),
+    "hellaswag_rss_gb": num("R_HS_RSS"),
     "peak_rss_gb": num("R_RSS"),
     "download_s": num("R_DL_S"), "bench_s": num("R_BENCH_S"), "ppl_s": num("R_PPL_S"),
     "threads": int(e.get("THREADS") or 0), "cpu_info": e.get("R_CPU", ""),
@@ -242,7 +243,11 @@ echo "PPL ${PPL} +/- ${PPL_ERR}, ${PPL_S}s"
 # validation set; the dataset is the text file llama.cpp's own scripts/get-hellaswag.sh
 # fetches. One line per task: "<n>\t<acc%>\t[<lo%>, <hi%>]" (Wilson 95 % interval);
 # the last one is the score over the first n tasks.
-META_FILES=("$OUT/bench.meta.json" "$OUT/ppl.meta.json")
+# Context: llama-perplexity runs HellaSwag with 4 parallel sequences, so -c is per sequence and the
+# real context is 4x; with Qwen's ~248k vocab the logits buffer grows with -b. -c 512 -b 512 fits a
+# task (~150 tokens x 4 endings) and keeps it near the model's own RSS (-c 2048 -b 2048 took 13-16 GB
+# on 4B/9B, run 38638331177). Its RSS goes to hellaswag_rss_gb; peak_rss_gb stays bench + PPL so the
+# RAM column keeps meaning "what the model needs".
 if [ "$HELLASWAG_TASKS" != "0" ]; then
   HS_FILE="$WORK/hellaswag_val_full.txt"
   echo "hellaswag: ${HELLASWAG_TASKS} tasks from ${HELLASWAG_URL}"
@@ -251,8 +256,8 @@ if [ "$HELLASWAG_TASKS" != "0" ]; then
     echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
   elif python3 bench/measure.py --stdout "$OUT/hs.out" --stderr "$OUT/hs.log" --meta "$OUT/hs.meta.json" -- \
          "$PPL_BIN" -m "$MODEL_PATH" --hellaswag --hellaswag-tasks "$HELLASWAG_TASKS" -f "$HS_FILE" \
-         -c 2048 -b 2048 -t "$THREADS"; then
-    META_FILES+=("$OUT/hs.meta.json")
+         -c 512 -b 512 -t "$THREADS"; then
+    HS_RSS_GB=$(python3 -c "import json;print(json.load(open('$OUT/hs.meta.json'))['max_rss_gb'])")
     HS_LINE=$(grep -h -E '^[0-9]+[[:space:]]+[0-9.]+%' "$OUT/hs.out" "$OUT/hs.log" | tail -1 || true)
     if [ -n "$HS_LINE" ]; then
       read -r HS_N HS_ACC HS_LO HS_HI < <(echo "$HS_LINE" | tr -d '%[],' | awk '{print $1, $2, $3, $4}')
@@ -263,7 +268,6 @@ if [ "$HELLASWAG_TASKS" != "0" ]; then
       echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
     fi
   else
-    [ -f "$OUT/hs.meta.json" ] && META_FILES+=("$OUT/hs.meta.json")
     HS_NOTE="hellaswag failed (see out/hs.log)"
     echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
   fi
@@ -271,7 +275,7 @@ else
   HS_NOTE="hellaswag skipped (HELLASWAG_TASKS=0)"
 fi
 
-PEAK_RSS_GB=$(python3 - "${META_FILES[@]}" <<'PY'
+PEAK_RSS_GB=$(python3 - "$OUT/bench.meta.json" "$OUT/ppl.meta.json" <<'PY'
 import json, sys
 print(max(json.load(open(p))["max_rss_gb"] for p in sys.argv[1:]))
 PY

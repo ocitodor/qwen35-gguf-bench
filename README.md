@@ -15,7 +15,8 @@ then runs
 - `llama-perplexity --hellaswag` — acc_norm over a fixed random subset of the HellaSwag
   validation set (100 tasks by default, `HELLASWAG_TASKS`), a quality proxy that catches
   a damaged model; it is non-fatal, a failure leaves the row `ok` with a note;
-- peak RAM of the runs (resident set size, GB).
+- peak RAM of llama-bench and the PPL run (resident set size, GB); HellaSwag's own RSS is
+  kept apart as `hellaswag_rss_gb`.
 
 Runner (public repo, `ubuntu-latest`): 4 vCPU, 16 GB RAM, 14 GB SSD, 6 h max per job,
 free and unlimited minutes. Up to 20 jobs run at once.
