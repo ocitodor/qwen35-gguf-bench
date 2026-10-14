@@ -49,7 +49,8 @@ DOWNLOAD_S=""; BENCH_S=""; PPL_S=""; CPU_INFO=""
 write_result() {
   export R_STATUS="$STATUS" R_ERROR="$ERROR" R_PP="$PP_TPS" R_TG="$TG_TPS" \
          R_PPL="$PPL" R_PPL_ERR="$PPL_ERR" R_RSS="$PEAK_RSS_GB" R_FILE_GB="$FILE_GB" \
-         R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO" \n         R_CPU_MODEL="$CPU_MODEL"
+         R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO" \
+         R_CPU_MODEL="$CPU_MODEL"
   python3 - "$RESULT" <<'PY'
 import datetime, json, os, sys
 e = os.environ
