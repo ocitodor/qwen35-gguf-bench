@@ -4,3 +4,4 @@ tools/
 out/
 results/
 __pycache__/
+.venv/

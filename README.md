@@ -184,6 +184,7 @@ pip install kaggle                      # token: C:\Scripts\secrets\kaggle\kaggl
 python kaggle/push.py push --size 4B --upload-repo <hf user>/Qwen3.5-4B-heretic-ara-GGUF
 python kaggle/push.py status --size 4B
 python kaggle/push.py output --size 4B --dest out-kaggle
+python kaggle/push.py upload --size 4B --dest out-kaggle   # GGUF -> private HF repo, token from hf.txt
 ```
 
 A private HF repo needs the `HF_TOKEN` repository secret here too, so the bench and Ask jobs can
