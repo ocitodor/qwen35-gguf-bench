@@ -40,6 +40,7 @@ SEED = 42
 REFUSAL_SLACK = 3                         # accept up to best_refusals + 3 (of the refusal prompts) for lower KL
 HERETIC_REF = "66a952b"                   # p-e-w/heretic master commit (headless mode)
 LLAMA_CPP_TAG = "b11429"                  # same build as the bench
+FLA_VERSION = "0.5.2"                     # flash-linear-attention: fast Gated DeltaNet kernels
 UPLOAD_REPO = ""                          # e.g. "<hf user>/Qwen3.5-4B-heretic-ara-GGUF"; empty = no upload
 UPLOAD_PRIVATE = True
 # ----------------------------------------------------------------------------------------------
@@ -97,6 +98,54 @@ def heretic(args, logfile):
     return run(["heretic", "--model", MODEL, "--study-checkpoint-dir", CKPT, *args], logfile=logfile, env=env)
 
 
+PREFLIGHT = r'''
+import json, sys, time, torch
+from transformers import AutoTokenizer
+from heretic.model import get_model_class
+model_id, dtype = sys.argv[1], sys.argv[2]
+tok = AutoTokenizer.from_pretrained(model_id)
+model = get_model_class(model_id).from_pretrained(model_id, dtype=getattr(torch, dtype), device_map="auto")
+msgs = [[{"role": "user", "content": q}] for q in
+        ["What is the capital of France? One word.", "Name the largest planet in the solar system. One word.",
+         "What is 12 times 12? Just the number.", "Which ocean lies between Europe and America? One word."] * 4]
+text = [tok.apply_chat_template(m, tokenize=False, add_generation_prompt=True, enable_thinking=False) for m in msgs]
+tok.padding_side = "left"
+enc = tok(text, return_tensors="pt", padding=True).to(model.device)
+with torch.no_grad():
+    logits = model(**enc).logits[:, -1, :]
+    finite = bool(torch.isfinite(logits).all())
+    t0 = time.time()
+    out = model.generate(**enc, max_new_tokens=32, do_sample=False)
+    dt = time.time() - t0
+answers = tok.batch_decode(out[:, enc["input_ids"].shape[1]:], skip_special_tokens=True)
+expect = ["paris", "jupiter", "144", "atlantic"]
+correct = sum(e in a.lower() for e, a in zip(expect * 4, answers))
+new = (out[:, enc["input_ids"].shape[1]:] != tok.pad_token_id).sum().item()
+print(json.dumps({"dtype": dtype, "finite_logits": finite, "correct": correct, "of": len(answers),
+                  "tokens_per_s_batch16": round(new / dt, 1), "sample": answers[:4]}))
+'''
+
+
+def preflight():
+    """float16 is fast on a T4 (no native bf16), but Qwen can overflow in fp16: check before 100 trials."""
+    path = f"{TMP}/preflight.py"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(PREFLIGHT)
+    for dtype in ("float16", "bfloat16"):
+        r = subprocess.run([sys.executable, path, MODEL, dtype], capture_output=True, text=True)
+        tail = (r.stdout.strip().splitlines() or [""])[-1]
+        log(f"preflight {dtype}: rc {r.returncode} {tail[:600]}")
+        if r.returncode != 0:
+            with open(f"{WORK}/preflight_{dtype}.log", "w", encoding="utf-8") as f:
+                f.write(r.stdout + r.stderr)
+            continue
+        res = json.loads(tail)
+        if res["finite_logits"] and res["correct"] >= res["of"] - 2:
+            log(f"using dtype {dtype} ({res['tokens_per_s_batch16']} tokens/s at batch 16)")
+            return [dtype]
+    raise SystemExit("preflight failed in float16 and bfloat16: see preflight_*.log")
+
+
 def pick_trial():
     """Replicate Heretic's Pareto sort and pick lowest KL within REFUSAL_SLACK of the fewest refusals."""
     import optuna
@@ -147,7 +196,13 @@ def main():
 
     # ---- 0. environment ----------------------------------------------------------------------
     run([sys.executable, "-m", "pip", "install", "-q", f"git+https://github.com/p-e-w/heretic@{HERETIC_REF}"])
+    # Qwen3.5's Gated DeltaNet layers use flash-linear-attention's Triton kernels when `fla` is
+    # importable; without it transformers falls back to plain torch: 9-15 tokens/s on a T4 in kernel v1.
+    # The base package needs only einops, so Kaggle's CUDA torch stays.
+    run([sys.executable, "-m", "pip", "install", "-q", f"flash-linear-attention=={FLA_VERSION}"])
+    run([sys.executable, "-c", "import fla, torch; print('fla', fla.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"])
     run(["heretic", "--help"], logfile=f"{WORK}/heretic_help.txt")
+    dtypes = preflight()
     run(f"git clone -q --depth 1 --branch {LLAMA_CPP_TAG} https://github.com/ggml-org/llama.cpp {TMP}/llama.cpp")
     # converter deps without its pinned CPU torch (Heretic's CUDA torch is already installed)
     run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{TMP}/llama.cpp/gguf-py", "sentencepiece", "protobuf"])
@@ -160,7 +215,8 @@ def main():
     run(f"chmod +x {qbin} {pbin}")
 
     # ---- 1. optimize (no export) ---------------------------------------------------------------
-    heretic(["--n-trials", str(N_TRIALS), "--n-startup-trials", str(N_STARTUP_TRIALS), "--seed", str(SEED),
+    heretic(["--dtypes", json.dumps(dtypes),
+             "--n-trials", str(N_TRIALS), "--n-startup-trials", str(N_STARTUP_TRIALS), "--seed", str(SEED),
              "--checkpoint-action", "restart", "--trial-index", "0", "--model-action", ""],
             logfile=f"{WORK}/heretic_optimize.log")
 
