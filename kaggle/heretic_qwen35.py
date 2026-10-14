@@ -201,6 +201,10 @@ def main():
     # The base package needs only einops, so Kaggle's CUDA torch stays.
     run([sys.executable, "-m", "pip", "install", "-q", f"flash-linear-attention=={FLA_VERSION}"])
     run([sys.executable, "-c", "import fla, torch; print('fla', fla.__version__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"])
+    # Kaggle's image ships torchao 0.10.0; peft raises ImportError for torchao < 0.16 when Heretic
+    # attaches its LoRA (kernel v2 died there). Nothing here uses torchao: remove it.
+    run([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"], check=False)
+    run([sys.executable, "-c", "from peft.import_utils import is_torchao_available as a; print('peft torchao check ok:', a())"])
     run(["heretic", "--help"], logfile=f"{WORK}/heretic_help.txt")
     dtypes = preflight()
     run(f"git clone -q --depth 1 --branch {LLAMA_CPP_TAG} https://github.com/ggml-org/llama.cpp {TMP}/llama.cpp")
