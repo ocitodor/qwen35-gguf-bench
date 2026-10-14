@@ -1,0 +1,11 @@
+[
+  {"model": "Qwen3.5-0.8B",    "quant": "Q4_K_M",     "repo": "unsloth/Qwen3.5-0.8B-GGUF",    "file": "Qwen3.5-0.8B-Q4_K_M.gguf",        "size_gb": 0.53, "cache": true,  "timeout_min": 30, "note": ""},
+  {"model": "Qwen3.5-0.8B",    "quant": "Q8_0",       "repo": "unsloth/Qwen3.5-0.8B-GGUF",    "file": "Qwen3.5-0.8B-Q8_0.gguf",          "size_gb": 0.81, "cache": true,  "timeout_min": 30, "note": ""},
+  {"model": "Qwen3.5-2B",      "quant": "Q4_K_M",     "repo": "unsloth/Qwen3.5-2B-GGUF",      "file": "Qwen3.5-2B-Q4_K_M.gguf",          "size_gb": 1.28, "cache": true,  "timeout_min": 30, "note": ""},
+  {"model": "Qwen3.5-2B",      "quant": "Q8_0",       "repo": "unsloth/Qwen3.5-2B-GGUF",      "file": "Qwen3.5-2B-Q8_0.gguf",            "size_gb": 2.01, "cache": true,  "timeout_min": 30, "note": ""},
+  {"model": "Qwen3.5-4B",      "quant": "Q4_K_M",     "repo": "unsloth/Qwen3.5-4B-GGUF",      "file": "Qwen3.5-4B-Q4_K_M.gguf",          "size_gb": 2.74, "cache": true,  "timeout_min": 45, "note": ""},
+  {"model": "Qwen3.5-4B",      "quant": "Q8_0",       "repo": "unsloth/Qwen3.5-4B-GGUF",      "file": "Qwen3.5-4B-Q8_0.gguf",            "size_gb": 4.48, "cache": false, "timeout_min": 45, "note": ""},
+  {"model": "Qwen3.5-9B",      "quant": "Q4_K_M",     "repo": "unsloth/Qwen3.5-9B-GGUF",      "file": "Qwen3.5-9B-Q4_K_M.gguf",          "size_gb": 5.68, "cache": false, "timeout_min": 60, "note": ""},
+  {"model": "Qwen3.5-9B",      "quant": "Q8_0",       "repo": "unsloth/Qwen3.5-9B-GGUF",      "file": "Qwen3.5-9B-Q8_0.gguf",            "size_gb": 9.53, "cache": false, "timeout_min": 60, "note": ""},
+  {"model": "Qwen3.5-35B-A3B", "quant": "UD-Q2_K_XL", "repo": "unsloth/Qwen3.5-35B-A3B-GGUF", "file": "Qwen3.5-35B-A3B-UD-Q2_K_XL.gguf", "size_gb": 12.2, "cache": false, "timeout_min": 90, "note": "speed-check only: Q2 quality is degraded, the Q4 (22 GB) belongs on Kaggle"}
+]

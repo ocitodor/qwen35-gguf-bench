@@ -1,0 +1,145 @@
+name: Qwen 3.5 GGUF bench
+
+# Manual only. Each GGUF in bench/models.json (or the override input) gets its
+# own job on a standard public-repo runner (4 vCPU / 16 GB RAM / 14 GB SSD);
+# the final job writes one comparison table to the run summary.
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: >-
+          Optional JSON array that replaces bench/models.json for this run
+          (same fields: model, quant, repo, file, size_gb, note, timeout_min, cache).
+          Leave empty for the default list.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Pinned ggml-org/llama.cpp build tag (bNNNNN — the binaries live on those; a versioned
+  # release such as v0.6.0 only points to one). The job downloads llama-<tag>-bin-ubuntu-x64.tar.gz.
+  LLAMA_CPP_TAG: b11429
+  PPL_CTX: "512"      # perplexity context size
+  PPL_CHUNKS: "8"     # perplexity chunks -> 8 x 512 = 4096 tokens, minutes not hours on CPU
+  BENCH_REPS: "3"     # llama-bench repetitions per test
+
+jobs:
+  plan:
+    name: Build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          OVERRIDE: ${{ inputs.models }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            echo "using the models override from the dispatch input"
+            printf '%s' "$OVERRIDE" | jq -c . > matrix.json
+          else
+            jq -c . bench/models.json > matrix.json
+          fi
+          jq -e 'type == "array" and length > 0 and all(.[]; has("model") and has("quant") and has("repo") and has("file"))' matrix.json > /dev/null \
+            || { echo "::error::models list must be a non-empty JSON array of {model, quant, repo, file, ...}"; exit 1; }
+          # fill optional fields so the matrix is uniform
+          jq -c 'map(. + {size_gb: (.size_gb // 0), note: (.note // ""), timeout_min: (.timeout_min // 60), cache: (.cache // false)})' matrix.json > matrix.full.json
+          echo "matrix=$(cat matrix.full.json)" >> "$GITHUB_OUTPUT"
+          echo "### Planned models" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.[] | "- \(.model) \(.quant) — \(.repo)/\(.file) (~\(.size_gb) GB)\(if .note != "" then " — " + .note else "" end)"' matrix.full.json >> "$GITHUB_STEP_SUMMARY"
+
+  bench:
+    name: ${{ matrix.model }} ${{ matrix.quant }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout_min }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      MODEL_REPO: ${{ matrix.repo }}
+      MODEL_FILE: ${{ matrix.file }}
+      MODEL_NAME: ${{ matrix.model }}
+      QUANT: ${{ matrix.quant }}
+      SIZE_GB: ${{ matrix.size_gb }}
+      NOTE: ${{ matrix.note }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}   # optional; empty means anonymous download
+      GH_TOKEN: ${{ github.token }}       # only for the llama.cpp release API fallback
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only small files are cached: the whole repo shares a 10 GB cache budget.
+      - name: Restore cached GGUF
+        if: ${{ matrix.cache == true }}
+        uses: actions/cache@v4
+        with:
+          path: models/${{ matrix.file }}
+          key: gguf-${{ matrix.file }}-v1
+
+      - name: Bench
+        run: bash bench/run_bench.sh
+
+      - name: Upload result JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.model }}-${{ matrix.quant }}
+          path: results/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload llama.cpp logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.model }}-${{ matrix.quant }}
+          path: |
+            out/*.log
+            out/*.out
+            out/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  summary:
+    name: Comparison table
+    needs: [plan, bench]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: true
+
+      - name: Write table
+        env:
+          MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
+        run: |
+          mkdir -p results
+          python3 bench/summarize.py --results results --matrix-json "$MATRIX_JSON" \
+            --out summary.md --json combined.json
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-bench-summary
+          path: |
+            summary.md
+            combined.json
+          retention-days: 90

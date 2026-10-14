@@ -1,0 +1,6 @@
+# runtime dirs created by bench/run_bench.sh on the runner
+models/
+tools/
+out/
+results/
+__pycache__/
