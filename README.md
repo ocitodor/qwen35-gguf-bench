@@ -90,9 +90,11 @@ The workflow never runs on push or on a schedule.
 
 Where the results are:
 
-- the run's **Summary** page — the planned list at the top, the comparison table at the
+- the run's **Summary** page — the planned list at the top, the comparison tables at the
   bottom (`Comparison table` job), with model, quant, file GB, pp512 t/s, tg128 t/s, PPL,
-  peak RAM GB and status;
+  peak RAM GB and status. Rows are grouped into one table per runner **CPU family**
+  (`AMD EPYC 7763`, `AMD EPYC 9V45`, ...): jobs land on different hosts, so speed is
+  comparable only within a group, while PPL and RAM compare across groups;
 - artifacts: `qwen-bench-summary` (the table as `summary.md` + `combined.json`), one
   `result-<model>-<quant>` JSON per job (kept 30 days) and one `log-<model>-<quant>` with
   the raw llama.cpp output (kept 7 days) for anything that failed.
@@ -116,8 +118,9 @@ Top of `.github/workflows/qwen-bench.yml`:
 
 ## Reading the numbers
 
-- Runner CPUs vary between runs (different Azure hosts), so compare rows **within one
-  run**; the CPU model is printed under the table.
+- Runner CPUs vary between jobs, even inside one run (different Azure hosts), so compare
+  speeds only **within one CPU group**; each result JSON carries `cpu_model` (from
+  `/proc/cpuinfo`, recorded before anything can fail) and `cpu_family` (the grouping key).
 - pp512 is what matters for long prompts, tg128 for chat-style generation.
 - PPL on a 4k-token text has a visible error bar (shown as ±); differences smaller than
   the error bar are noise.

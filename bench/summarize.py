@@ -5,11 +5,32 @@ Usage: summarize.py --results DIR [--matrix-json JSON] --out summary.md --json c
 
 Rows follow the matrix order; a matrix entry without a result file becomes a
 "no result" row (the job died before run_bench.sh could write anything).
+
+Rows are grouped by the host CPU family (one sub-table per family): runner
+hosts differ between jobs, so pp/tg speeds are comparable only within a group.
+PPL and peak RAM do not depend on the host and compare across groups.
 """
 import argparse
 import glob
 import json
 import os
+import re
+
+UNKNOWN_CPU = "unknown CPU"
+
+# Stripped from the CPU name to get a family: "AMD EPYC 7763 64-Core Processor" -> "AMD EPYC 7763",
+# "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz" -> "Intel Xeon Platinum 8370C".
+_CPU_NOISE = [
+    r"\(R\)", r"\(TM\)", r"\d+-Core Processor", r"\bProcessor\b", r"\bCPU\b", r"@\s*[\d.]+\s*GHz",
+]
+
+
+def cpu_family(row):
+    name = row.get("cpu_model") or row.get("cpu_info") or ""
+    for pat in _CPU_NOISE:
+        name = re.sub(pat, " ", name, flags=re.IGNORECASE)
+    name = " ".join(name.split())
+    return name or UNKNOWN_CPU
 
 
 def fmt(v, nd=1):
@@ -23,6 +44,36 @@ def fmt(v, nd=1):
 
 def key(entry):
     return (entry.get("model", ""), entry.get("quant", ""))
+
+
+TABLE_HEAD = [
+    "| Model | Quant | File GB | pp512 t/s | tg128 t/s | PPL | Peak RAM GB | Status |",
+    "|---|---|---:|---:|---:|---:|---:|---|",
+]
+
+
+def table_row(r):
+    status = r.get("status", "?")
+    if r.get("error"):
+        status += f" — {r['error']}"
+    if r.get("note"):
+        status += f" ({r['note']})"
+    ppl = fmt(r.get("ppl"), 3)
+    if r.get("ppl_err") is not None and r.get("ppl") is not None:
+        ppl += f" ± {fmt(r.get('ppl_err'), 3)}"
+    return (
+        f"| {r.get('model','')} | {r.get('quant','')} | {fmt(r.get('file_gb'), 2)} | "
+        f"{fmt(r.get('pp512_tps'))} | {fmt(r.get('tg128_tps'))} | {ppl} | "
+        f"{fmt(r.get('peak_rss_gb'), 2)} | {status} |"
+    )
+
+
+def group_rows(rows):
+    """[(family, [rows in matrix order])], largest group first, ties alphabetical, unknown CPU last."""
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["cpu_family"], []).append(r)
+    return sorted(groups.items(), key=lambda kv: (kv[0] == UNKNOWN_CPU, -len(kv[1]), kv[0].lower()))
 
 
 def main():
@@ -58,12 +109,12 @@ def main():
         if r is None:
             r = {"model": k[0], "quant": k[1], "note": m.get("note", ""),
                  "status": "no result", "error": "job ended before writing a result (see its log)"}
+        r["cpu_family"] = cpu_family(r)
         rows.append(r)
 
     lines = ["## Qwen 3.5 GGUF bench", ""]
     tags = sorted({r.get("llama_cpp_tag") for r in rows if r.get("llama_cpp_tag")})
     threads = sorted({r.get("threads") for r in rows if r.get("threads")})
-    cpus = sorted({r.get("cpu_info") for r in rows if r.get("cpu_info")})
     ctx = sorted({(r.get("ppl_ctx"), r.get("ppl_chunks")) for r in rows if r.get("ppl_ctx")})
     meta = []
     if tags:
@@ -72,39 +123,28 @@ def main():
         meta.append("threads " + ", ".join(str(t) for t in threads))
     if ctx:
         meta.append("PPL on bench/ppl.txt, " + ", ".join(f"ctx {c} x {n} chunks" for c, n in ctx))
-    if cpus:
-        meta.append("CPU: " + "; ".join(cpus))
     if meta:
         lines += ["_" + " · ".join(meta) + "_", ""]
 
-    lines += [
-        "| Model | Quant | File GB | pp512 t/s | tg128 t/s | PPL | Peak RAM GB | Status |",
-        "|---|---|---:|---:|---:|---:|---:|---|",
-    ]
-    for r in rows:
-        status = r.get("status", "?")
-        if r.get("error"):
-            status += f" — {r['error']}"
-        if r.get("note"):
-            status += f" ({r['note']})"
-        ppl = fmt(r.get("ppl"), 3)
-        if r.get("ppl_err") is not None and r.get("ppl") is not None:
-            ppl += f" ± {fmt(r.get('ppl_err'), 3)}"
-        lines.append(
-            f"| {r.get('model','')} | {r.get('quant','')} | {fmt(r.get('file_gb'), 2)} | "
-            f"{fmt(r.get('pp512_tps'))} | {fmt(r.get('tg128_tps'))} | {ppl} | "
-            f"{fmt(r.get('peak_rss_gb'), 2)} | {status} |"
-        )
+    groups = group_rows(rows)
+    lines += ["Rows are grouped by the runner's CPU: speed (pp/tg) is comparable only within a group; "
+              "PPL and RAM are comparable across groups.", ""]
+    for family, members in groups:
+        lines += [f"### {family} ({len(members)} row{'s' if len(members) != 1 else ''})", ""]
+        lines += TABLE_HEAD
+        lines += [table_row(r) for r in members]
+        lines.append("")
 
     ok = sum(1 for r in rows if r.get("status") == "ok")
-    lines += ["", f"{ok}/{len(rows)} models benchmarked. pp512 = prompt processing speed, "
+    lines += [f"{ok}/{len(rows)} models benchmarked on {len(groups)} CPU "
+              f"{'family' if len(groups) == 1 else 'families'}. pp512 = prompt processing speed, "
               "tg128 = generation speed, both tokens/s on the runner's CPU. PPL is a relative "
               "measure on a fixed text (lower is better); compare rows against each other, "
               "not against published numbers.", ""]
 
-    with open(a.out, "w") as f:
+    with open(a.out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    with open(a.json, "w") as f:
+    with open(a.json, "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2)
     print("\n".join(lines))
 

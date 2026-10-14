@@ -35,6 +35,12 @@ OUT="$WORK/out"
 mkdir -p "$MODEL_DIR" "$TOOL_DIR" "$OUT" "$RESULT_DIR"
 RESULT="$RESULT_DIR/${MODEL_NAME}-${QUANT}.json"
 
+# Host CPU, recorded before anything can fail so a failed/skipped row still groups by host
+# (cpu_info below stays as llama-bench reports it).
+CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | xargs || true)
+[ -n "$CPU_MODEL" ] || CPU_MODEL=$(lscpu 2>/dev/null | grep -m1 'Model name' | cut -d: -f2- | xargs || true)
+echo "host CPU: ${CPU_MODEL:-unknown}"
+
 # --- result bookkeeping ------------------------------------------------------
 STATUS="failed"; ERROR=""
 PP_TPS=""; TG_TPS=""; PPL=""; PPL_ERR=""; PEAK_RSS_GB=""; FILE_GB=""
@@ -43,7 +49,7 @@ DOWNLOAD_S=""; BENCH_S=""; PPL_S=""; CPU_INFO=""
 write_result() {
   export R_STATUS="$STATUS" R_ERROR="$ERROR" R_PP="$PP_TPS" R_TG="$TG_TPS" \
          R_PPL="$PPL" R_PPL_ERR="$PPL_ERR" R_RSS="$PEAK_RSS_GB" R_FILE_GB="$FILE_GB" \
-         R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO"
+         R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO" \n         R_CPU_MODEL="$CPU_MODEL"
   python3 - "$RESULT" <<'PY'
 import datetime, json, os, sys
 e = os.environ
@@ -63,6 +69,7 @@ out = {
     "peak_rss_gb": num("R_RSS"),
     "download_s": num("R_DL_S"), "bench_s": num("R_BENCH_S"), "ppl_s": num("R_PPL_S"),
     "threads": int(e.get("THREADS") or 0), "cpu_info": e.get("R_CPU", ""),
+    "cpu_model": e.get("R_CPU_MODEL", ""),
     "llama_cpp_tag": e["LLAMA_CPP_TAG"],
     "ppl_ctx": int(e.get("PPL_CTX") or 0), "ppl_chunks": int(e.get("PPL_CHUNKS") or 0),
     "runner_image": (e.get("ImageOS", "") + " " + e.get("ImageVersion", "")).strip(),
