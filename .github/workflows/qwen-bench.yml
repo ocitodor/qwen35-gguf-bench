@@ -2,7 +2,8 @@ name: Qwen 3.5 GGUF bench
 
 # Manual only. Each GGUF in bench/models.json (or the override input) gets its
 # own job on a standard public-repo runner (4 vCPU / 16 GB RAM / 14 GB SSD);
-# the final job writes one comparison table to the run summary.
+# the final job writes one comparison table to the run summary and a second
+# table of medians across this and the earlier runs of this workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read     # the summary job downloads earlier runs' qwen-bench-summary artifacts
 
 env:
   # Pinned ggml-org/llama.cpp build tag (bNNNNN — the binaries live on those; a versioned
@@ -25,6 +27,7 @@ env:
   PPL_CTX: "512"      # perplexity context size
   PPL_CHUNKS: "8"     # perplexity chunks -> 8 x 512 = 4096 tokens, minutes not hours on CPU
   BENCH_REPS: "3"     # llama-bench repetitions per test
+  MERGE_RUNS: "20"    # how many earlier completed runs the across-runs table pulls in
 
 jobs:
   plan:
@@ -135,6 +138,25 @@ jobs:
             --out summary.md --json combined.json
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
 
+      # Medians per (model, quant, CPU family, llama.cpp build) over this run and the earlier
+      # completed runs of this workflow: one host is one sample, a median needs several.
+      - name: Merge with earlier runs
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p earlier
+          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow qwen-bench.yml --status completed \
+                        --limit "$MERGE_RUNS" --json databaseId --jq '.[].databaseId'); do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n qwen-bench-summary -D "earlier/$id" 2>/dev/null \
+              && echo "earlier run $id: $(jq length "earlier/$id/combined.json" 2>/dev/null || echo '?') rows" \
+              || echo "earlier run $id: no qwen-bench-summary artifact (expired or failed before the table)"
+          done
+          python3 bench/merge.py --out merged.md --json merged.json combined.json earlier
+          cat merged.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload combined results
         uses: actions/upload-artifact@v4
         with:
@@ -142,4 +164,7 @@ jobs:
           path: |
             summary.md
             combined.json
+            merged.md
+            merged.json
+          if-no-files-found: warn
           retention-days: 90
