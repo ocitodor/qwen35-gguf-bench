@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One matrix job: fetch a pinned llama.cpp release and one GGUF, run llama-bench
-# and llama-perplexity, write results/<model>-<quant>.json.
+# One matrix job: fetch a pinned llama.cpp release and one GGUF, run llama-bench,
+# llama-perplexity (PPL) and llama-perplexity --hellaswag, write results/<model>-<quant>.json.
 #
 # Everything comes in through the environment (set by the workflow):
 #   MODEL_REPO   HF repo, e.g. unsloth/Qwen3.5-4B-GGUF
@@ -12,9 +12,12 @@
 #   LLAMA_CPP_TAG  release tag of ggml-org/llama.cpp to download (prebuilt, no compiling)
 #   HF_TOKEN     optional; anonymous downloads work for public repos
 #   THREADS, PPL_CTX, PPL_CHUNKS, BENCH_REPS, PPL_FILE, RESULT_DIR  optional tuning
+#   HELLASWAG_TASKS  validation tasks for the HellaSwag score (0 = skip; default 100)
+#   HELLASWAG_URL    where hellaswag_val_full.txt comes from (llama.cpp's own source)
 #
 # A result JSON is written on every exit path (ok / failed / skipped) so the
-# summary job can always show a row.
+# summary job can always show a row. HellaSwag is a quality proxy on top of the
+# speed + PPL row: if it fails, the row stays ok with hellaswag_note set.
 set -euo pipefail
 
 : "${MODEL_REPO:?}" "${MODEL_FILE:?}" "${MODEL_NAME:?}" "${QUANT:?}" "${LLAMA_CPP_TAG:?}"
@@ -26,6 +29,8 @@ PPL_CHUNKS="${PPL_CHUNKS:-8}"
 BENCH_REPS="${BENCH_REPS:-3}"
 PPL_FILE="${PPL_FILE:-bench/ppl.txt}"
 RESULT_DIR="${RESULT_DIR:-results}"
+HELLASWAG_TASKS="${HELLASWAG_TASKS:-100}"
+HELLASWAG_URL="${HELLASWAG_URL:-https://raw.githubusercontent.com/klosax/hellaswag_text_data/main/hellaswag_val_full.txt}"
 export THREADS PPL_CTX PPL_CHUNKS NOTE
 
 WORK="$PWD"
@@ -45,12 +50,14 @@ echo "host CPU: ${CPU_MODEL:-unknown}"
 STATUS="failed"; ERROR=""
 PP_TPS=""; TG_TPS=""; PPL=""; PPL_ERR=""; PEAK_RSS_GB=""; FILE_GB=""
 DOWNLOAD_S=""; BENCH_S=""; PPL_S=""; CPU_INFO=""
+HS_ACC=""; HS_LO=""; HS_HI=""; HS_N=""; HS_S=""; HS_NOTE=""
 
 write_result() {
   export R_STATUS="$STATUS" R_ERROR="$ERROR" R_PP="$PP_TPS" R_TG="$TG_TPS" \
          R_PPL="$PPL" R_PPL_ERR="$PPL_ERR" R_RSS="$PEAK_RSS_GB" R_FILE_GB="$FILE_GB" \
          R_DL_S="$DOWNLOAD_S" R_BENCH_S="$BENCH_S" R_PPL_S="$PPL_S" R_CPU="$CPU_INFO" \
-         R_CPU_MODEL="$CPU_MODEL"
+         R_CPU_MODEL="$CPU_MODEL" \
+         R_HS_ACC="$HS_ACC" R_HS_LO="$HS_LO" R_HS_HI="$HS_HI" R_HS_N="$HS_N" R_HS_S="$HS_S" R_HS_NOTE="$HS_NOTE"
   python3 - "$RESULT" <<'PY'
 import datetime, json, os, sys
 e = os.environ
@@ -67,6 +74,8 @@ out = {
     "file_gb": num("R_FILE_GB"),
     "pp512_tps": num("R_PP"), "tg128_tps": num("R_TG"),
     "ppl": num("R_PPL"), "ppl_err": num("R_PPL_ERR"),
+    "hellaswag_acc": num("R_HS_ACC"), "hellaswag_ci_lo": num("R_HS_LO"), "hellaswag_ci_hi": num("R_HS_HI"),
+    "hellaswag_tasks": num("R_HS_N"), "hellaswag_s": num("R_HS_S"), "hellaswag_note": e.get("R_HS_NOTE", ""),
     "peak_rss_gb": num("R_RSS"),
     "download_s": num("R_DL_S"), "bench_s": num("R_BENCH_S"), "ppl_s": num("R_PPL_S"),
     "threads": int(e.get("THREADS") or 0), "cpu_info": e.get("R_CPU", ""),
@@ -228,7 +237,41 @@ PPL_ERR=$(echo "$PPL_LINE" | awk '{print $7}')
 PPL_S=$(python3 -c "import json;print(json.load(open('$OUT/ppl.meta.json'))['elapsed_s'])")
 echo "PPL ${PPL} +/- ${PPL_ERR}, ${PPL_S}s"
 
-PEAK_RSS_GB=$(python3 - "$OUT/bench.meta.json" "$OUT/ppl.meta.json" <<'PY'
+# --- HellaSwag (quality proxy; non-fatal) ------------------------------------------
+# llama-perplexity --hellaswag scores acc_norm over a fixed random subset (seed 1) of the
+# validation set; the dataset is the text file llama.cpp's own scripts/get-hellaswag.sh
+# fetches. One line per task: "<n>\t<acc%>\t[<lo%>, <hi%>]" (Wilson 95 % interval);
+# the last one is the score over the first n tasks.
+META_FILES=("$OUT/bench.meta.json" "$OUT/ppl.meta.json")
+if [ "$HELLASWAG_TASKS" != "0" ]; then
+  HS_FILE="$WORK/hellaswag_val_full.txt"
+  echo "hellaswag: ${HELLASWAG_TASKS} tasks from ${HELLASWAG_URL}"
+  if ! curl -fsSL --retry 3 -o "$HS_FILE" "$HELLASWAG_URL"; then
+    HS_NOTE="hellaswag skipped: dataset download failed"
+    echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
+  elif python3 bench/measure.py --stdout "$OUT/hs.out" --stderr "$OUT/hs.log" --meta "$OUT/hs.meta.json" -- \
+         "$PPL_BIN" -m "$MODEL_PATH" --hellaswag --hellaswag-tasks "$HELLASWAG_TASKS" -f "$HS_FILE" \
+         -c 2048 -b 2048 -t "$THREADS"; then
+    META_FILES+=("$OUT/hs.meta.json")
+    HS_LINE=$(grep -h -E '^[0-9]+[[:space:]]+[0-9.]+%' "$OUT/hs.out" "$OUT/hs.log" | tail -1 || true)
+    if [ -n "$HS_LINE" ]; then
+      read -r HS_N HS_ACC HS_LO HS_HI < <(echo "$HS_LINE" | tr -d '%[],' | awk '{print $1, $2, $3, $4}')
+      HS_S=$(python3 -c "import json;print(json.load(open('$OUT/hs.meta.json'))['elapsed_s'])")
+      echo "hellaswag ${HS_ACC}% [${HS_LO}, ${HS_HI}] over ${HS_N} tasks, ${HS_S}s"
+    else
+      HS_NOTE="hellaswag: no score line in the output (see out/hs.log)"
+      echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
+    fi
+  else
+    [ -f "$OUT/hs.meta.json" ] && META_FILES+=("$OUT/hs.meta.json")
+    HS_NOTE="hellaswag failed (see out/hs.log)"
+    echo "::warning::${MODEL_NAME} ${QUANT}: ${HS_NOTE}"
+  fi
+else
+  HS_NOTE="hellaswag skipped (HELLASWAG_TASKS=0)"
+fi
+
+PEAK_RSS_GB=$(python3 - "${META_FILES[@]}" <<'PY'
 import json, sys
 print(max(json.load(open(p))["max_rss_gb"] for p in sys.argv[1:]))
 PY
@@ -236,4 +279,4 @@ PY
 
 STATUS="ok"
 write_result
-echo "::notice::${MODEL_NAME} ${QUANT}: pp512 ${PP_TPS} t/s, tg128 ${TG_TPS} t/s, PPL ${PPL}, peak RSS ${PEAK_RSS_GB} GB"
+echo "::notice::${MODEL_NAME} ${QUANT}: pp512 ${PP_TPS} t/s, tg128 ${TG_TPS} t/s, PPL ${PPL}, HellaSwag ${HS_ACC:-n/a}%, peak RSS ${PEAK_RSS_GB} GB"

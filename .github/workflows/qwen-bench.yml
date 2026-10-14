@@ -27,6 +27,7 @@ env:
   PPL_CTX: "512"      # perplexity context size
   PPL_CHUNKS: "8"     # perplexity chunks -> 8 x 512 = 4096 tokens, minutes not hours on CPU
   BENCH_REPS: "3"     # llama-bench repetitions per test
+  HELLASWAG_TASKS: "100"   # HellaSwag validation tasks per model (0 = skip); ~100-150 prompt tokens each
   MERGE_RUNS: "20"    # how many earlier completed runs the across-runs table pulls in
 
 jobs:
