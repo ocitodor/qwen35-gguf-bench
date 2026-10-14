@@ -1,0 +1,117 @@
+name: Ask Qwen 3.5
+
+# Manual only. One job: download a pinned llama.cpp release and one GGUF from
+# bench/models.json, start llama-server, send the prompt (or every prompt in a
+# file) to /v1/chat/completions, write the answers to the run summary and an
+# artifact, stop the server. A dispatched job, not a service.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model and quant (an entry of bench/models.json)
+        required: true
+        default: "Qwen3.5-4B Q4_K_M"
+        type: choice
+        options:
+          - "Qwen3.5-0.8B Q4_K_M"
+          - "Qwen3.5-0.8B Q8_0"
+          - "Qwen3.5-2B Q4_K_M"
+          - "Qwen3.5-2B Q8_0"
+          - "Qwen3.5-4B Q4_K_M"
+          - "Qwen3.5-4B Q8_0"
+          - "Qwen3.5-9B Q4_K_M"
+          - "Qwen3.5-9B Q8_0"
+          - "Qwen3.5-35B-A3B UD-Q2_K_XL"
+      prompt:
+        description: The question (ignored when prompts_file is set)
+        required: false
+        default: ""
+        type: string
+      system:
+        description: Optional system prompt
+        required: false
+        default: ""
+        type: string
+      max_tokens:
+        description: Max answer tokens
+        required: false
+        default: "512"
+        type: string
+      temperature:
+        description: Sampling temperature
+        required: false
+        default: "0.7"
+        type: string
+      thinking:
+        description: Let the model think first (slower; the reasoning is shown separately)
+        required: false
+        default: false
+        type: boolean
+      prompts_file:
+        description: Batch mode - a file in this repo, one prompt per line (.txt) or one JSON object per line with prompt/system (.jsonl)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_CPP_TAG: b11429   # same pinned build as the bench (bNNNNN tags carry the binaries)
+  CTX: "8192"             # server context size
+
+jobs:
+  ask:
+    name: ${{ inputs.model }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Look the model up in bench/models.json
+        id: plan
+        env:
+          LABEL: ${{ inputs.model }}
+        run: |
+          jq -c --arg label "$LABEL" '.[] | select((.model + " " + .quant) == $label)' bench/models.json > entry.json
+          if [ ! -s entry.json ]; then echo "::error::$LABEL is not in bench/models.json"; exit 1; fi
+          for k in repo file size_gb cache model quant; do
+            echo "$k=$(jq -r --arg k "$k" '.[$k] // ""' entry.json)" >> "$GITHUB_OUTPUT"
+          done
+
+      # Same cache key as the bench, so a benched small model is already here.
+      - name: Restore cached GGUF
+        if: ${{ steps.plan.outputs.cache == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: models/${{ steps.plan.outputs.file }}
+          key: gguf-${{ steps.plan.outputs.file }}-v1
+
+      - name: Ask
+        env:
+          MODEL_REPO: ${{ steps.plan.outputs.repo }}
+          MODEL_FILE: ${{ steps.plan.outputs.file }}
+          MODEL_NAME: ${{ steps.plan.outputs.model }}
+          QUANT: ${{ steps.plan.outputs.quant }}
+          SIZE_GB: ${{ steps.plan.outputs.size_gb }}
+          PROMPT: ${{ inputs.prompt }}
+          SYSTEM: ${{ inputs.system }}
+          MAX_TOKENS: ${{ inputs.max_tokens }}
+          TEMPERATURE: ${{ inputs.temperature }}
+          THINKING: ${{ inputs.thinking }}
+          PROMPTS_FILE: ${{ inputs.prompts_file }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # optional; empty means anonymous download
+          GH_TOKEN: ${{ github.token }}       # only for the llama.cpp release API fallback
+        run: bash ask/run_ask.sh
+
+      - name: Upload answers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: answers-${{ github.run_number }}
+          path: |
+            out/answer.md
+            out/answers.jsonl
+            out/server.log
+          if-no-files-found: warn
+          retention-days: 30

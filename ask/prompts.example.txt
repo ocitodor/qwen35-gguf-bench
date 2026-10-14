@@ -1,0 +1,4 @@
+# One prompt per line; blank lines and # lines are skipped. Use as prompts_file: ask/prompts.example.txt
+What is the capital of Bulgaria, and what is it known for? Two sentences.
+Write a Python one-liner that reverses the words of a sentence.
+Explain the difference between a 4-bit and an 8-bit quantized model in plain words.

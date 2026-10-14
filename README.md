@@ -102,6 +102,30 @@ Where the results are:
 A typical default run finishes in 10–20 minutes wall clock; the 9B Q8_0 and the
 35B-A3B jobs are the slow ones.
 
+## Ask a model (use it, not just measure it)
+
+**Actions → Ask Qwen 3.5 → Run workflow.** Pick the model (any entry of
+`bench/models.json`), type the prompt, optionally a system prompt, max tokens and
+temperature, and run. The job downloads the GGUF (the small ones come from the bench
+cache), starts `llama-server`, sends the prompt to `/v1/chat/completions` and writes the
+answer to the run's **Summary** page and to the artifact `answers-<run number>`
+(`answer.md`, `answers.jsonl`, `server.log`). The server stops when the job ends: it is a
+dispatched job, not a service (GitHub's Actions policy excludes serving, and jobs end
+after 6 h anyway).
+
+- **Batch mode:** set `prompts_file` to a file in this repo, one prompt per line (`.txt`,
+  `#` lines skipped) or one JSON object per line with `prompt` and optional `system`
+  (`.jsonl`); every prompt is answered in order. Example: `ask/prompts.example.txt`.
+- **Thinking:** off by default (`--reasoning off`, direct answer). Turn it on for
+  reasoning tasks and raise `max_tokens` (the thinking counts against it; a small model
+  can spend it all on thinking). The reasoning is shown in a collapsed block above the
+  answer.
+- **Timing:** the 4B Q4_K_M answers 300 tokens in about a minute on the runner after a
+  cached load; the 9B Q4_K_M needs a 20 s download and about a minute per 150 tokens;
+  the 35B-A3B Q2 downloads 12 GB first (about 1 min) and then generates at 8–10 t/s.
+- Files: `.github/workflows/qwen-ask.yml`, `ask/run_ask.sh` (disk, llama.cpp, download,
+  server), `ask/ask.py` (requests, answer.md, run summary).
+
 ## Tuning
 
 Top of `.github/workflows/qwen-bench.yml`:
@@ -136,4 +160,8 @@ bench/run_bench.sh                 one job: disk, llama.cpp, download, bench, pe
 bench/measure.py                   runs a command, records wall time and peak RSS
 bench/summarize.py                 result JSONs -> markdown table + combined.json
 bench/ppl.txt                      fixed text for perplexity (~3,800 words)
+ask/run_ask.sh                     one ask job: disk, llama.cpp, download, llama-server, then ask.py
+ask/ask.py                         sends the prompt(s) to the server, writes answer.md + answers.jsonl + summary
+ask/prompts.example.txt            batch-mode example
+.github/workflows/qwen-ask.yml     the ask workflow (one job)
 ```
