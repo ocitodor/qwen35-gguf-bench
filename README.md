@@ -167,6 +167,28 @@ after 6 h anyway).
 - Files: `.github/workflows/qwen-ask.yml`, `ask/run_ask.sh` (disk, llama.cpp, download,
   server), `ask/ask.py` (requests, scorer, answer.md / scores.md, run summary).
 
+## Fresh Heretic abliteration on Kaggle (optional)
+
+`kaggle/heretic_qwen35.py` is a Kaggle GPU script kernel (T4 x2, Internet on) that makes a new
+Heretic abliteration instead of using a community upload: Heretic from a pinned master commit
+(PyPI 1.4.0 has no headless mode), default ARA modifier, 100 trials, seed 42. Phase 1 optimizes
+and exits; phase 2 picks the lowest-KL trial within 3 refusals of the fewest (Heretic's own index
+0 is just "fewest refusals"); phase 3 exports it merged; then `convert_hf_to_gguf.py` and
+`llama-quantize` from the same llama.cpp build as the bench (b11429) give a Q4_K_M GGUF, with a
+sanity PPL on `bench/ppl.txt`. Outputs: the GGUF, `pick.json` (whole Pareto front),
+`summary.json` and logs in the kernel output; optionally an upload to a Hugging Face repo
+(private by default) when the notebook has the `HF_TOKEN` Kaggle secret attached.
+
+```bash
+pip install kaggle                      # token: C:\Scripts\secrets\kaggle\kaggle.json
+python kaggle/push.py push --size 4B --upload-repo <hf user>/Qwen3.5-4B-heretic-ara-GGUF
+python kaggle/push.py status --size 4B
+python kaggle/push.py output --size 4B --dest out-kaggle
+```
+
+A private HF repo needs the `HF_TOKEN` repository secret here too, so the bench and Ask jobs can
+download it; then add the row to `bench/models.json` with `"abliterated": true`.
+
 ## Tuning
 
 Top of `.github/workflows/qwen-bench.yml`:
@@ -215,5 +237,7 @@ bench/refusal_probe.jsonl          30 HarmBench prompts + 10 benign controls for
 ask/run_ask.sh                     one ask job: disk, llama.cpp, download, llama-server, then ask.py
 ask/ask.py                         sends the prompt(s), scores the answers, writes answer.md / scores.md + summary
 ask/prompts.example.txt            batch-mode example
+kaggle/heretic_qwen35.py           Kaggle GPU kernel: Heretic -> pick -> merged export -> Q4_K_M GGUF -> optional HF upload
+kaggle/push.py                     push / status / output of that kernel through the Kaggle API
 .github/workflows/qwen-ask.yml     the ask workflow (one job)
 ```
