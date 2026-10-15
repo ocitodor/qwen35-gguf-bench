@@ -30,6 +30,7 @@ on:
           - "Qwen3.5-4B-heretic Q4_K_M"
           - "Qwen3.5-9B-heretic Q4_K_M"
           - "Huihui-Qwen3.5-4B-abliterated Q4_K_M"
+          - "Qwen3.5-4B-heretic-ara Q4_K_M"
       prompt:
         description: The question (ignored when prompts_file is set)
         required: false

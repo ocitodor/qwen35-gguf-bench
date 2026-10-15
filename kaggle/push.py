@@ -130,13 +130,17 @@ def upload(a):
 
     The HF token is read from HF_TOKEN_FILE and handed to huggingface_hub only; never printed.
     """
-    rc = output(a)
-    if rc:
-        return rc
+    if not a.gguf:
+        rc = output(a)
+        if rc:
+            return rc
     name = f"Qwen3.5-{a.size}-heretic-ara"
-    gguf = os.path.join(a.dest, f"{name}.Q4_K_M.gguf")
+    gguf = a.gguf or os.path.join(a.dest, f"{name}.Q4_K_M.gguf")
     if not os.path.exists(gguf):
         sys.exit(f"no {os.path.basename(gguf)} in {a.dest}: see run.log there")
+    with open(gguf, "rb") as f:
+        if f.read(4) != b"GGUF":  # Kaggle sometimes serves a 502 HTML page in place of the file
+            sys.exit(f"{gguf} is not a GGUF ({os.path.getsize(gguf)} bytes): download again")
     summary = json.load(open(os.path.join(a.dest, "summary.json"), encoding="utf-8"))
     with open(HF_TOKEN_FILE, encoding="utf-8-sig") as f:
         token = f.read().strip()
@@ -151,8 +155,10 @@ def upload(a):
             f"4k-token text: {summary.get('ppl')}.\n\nChosen trial:\n\n```json\n"
             f"{json.dumps(summary.get('chosen'), indent=2, default=str)}\n```\n")
     api.upload_file(path_or_fileobj=card.encode("utf-8"), path_in_repo="README.md", repo_id=repo)
-    api.upload_file(path_or_fileobj=os.path.join(a.dest, "pick.json"), path_in_repo="heretic_pick.json", repo_id=repo)
-    api.upload_file(path_or_fileobj=gguf, path_in_repo=os.path.basename(gguf), repo_id=repo)
+    pick = os.path.join(a.dest, "pick.json")
+    if os.path.exists(pick) and open(pick, "rb").read(1) == b"{":
+        api.upload_file(path_or_fileobj=pick, path_in_repo="heretic_pick.json", repo_id=repo)
+    api.upload_file(path_or_fileobj=gguf, path_in_repo=f"{name}.Q4_K_M.gguf", repo_id=repo)
     print(f"uploaded {os.path.basename(gguf)} to https://huggingface.co/{repo} (private)")
     return 0
 
@@ -175,6 +181,8 @@ def main():
             p.add_argument("--dest", required=True)
         if name == "upload":
             p.add_argument("--repo", default="", help="HF repo id (default ocitodor/Qwen3.5-<size>-heretic-ara-GGUF)")
+            p.add_argument("--gguf", default="", help="a local GGUF (e.g. downloaded in the browser when the API 502s); "
+                                                      "--dest still holds summary.json")
     a = ap.parse_args()
     sys.exit({"push": push, "status": status, "output": output, "upload": upload}[a.cmd](a))
 
