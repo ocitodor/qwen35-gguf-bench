@@ -37,7 +37,8 @@ OUT_NAME = "Qwen3.5-4B-heretic-ara"       # GGUF base name
 N_TRIALS = 100                            # Heretic master default
 N_STARTUP_TRIALS = 30                     # Heretic master default
 SEED = 42
-REFUSAL_SLACK = 3                         # accept up to best_refusals + 3 (of the refusal prompts) for lower KL
+REFUSAL_SLACK = 0.03                      # Heretic's refusal score is a fraction: accept best + 0.03 (3 of 100 prompts) for lower KL
+RESUME = False                            # True: reuse a finished study from an attached Kaggle dataset, skip phase 1
 HERETIC_REF = "66a952b"                   # p-e-w/heretic master commit (headless mode)
 LLAMA_CPP_TAG = "b11429"                  # same build as the bench
 FLA_VERSION = "0.5.2"                     # flash-linear-attention: fast Gated DeltaNet kernels
@@ -146,8 +147,7 @@ def preflight():
     raise SystemExit("preflight failed in float16 and bfloat16: see preflight_*.log")
 
 
-def pick_trial():
-    """Replicate Heretic's Pareto sort and pick lowest KL within REFUSAL_SLACK of the fewest refusals."""
+def load_study():
     import optuna
     from optuna.storages import JournalStorage
     from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
@@ -156,7 +156,22 @@ def pick_trial():
     assert len(files) == 1, f"expected one checkpoint in {CKPT}, found {files}"
     path = os.path.join(CKPT, files[0])
     storage = JournalStorage(JournalFileBackend(path, lock_obj=JournalFileOpenLock(path)))
-    study = optuna.load_study(study_name=storage.get_all_studies()[0].study_name, storage=storage)
+    return optuna.load_study(study_name=storage.get_all_studies()[0].study_name, storage=storage)
+
+
+def set_export_settings(k):
+    """Rewrite the study's stored settings so `--checkpoint-action continue` exports Pareto index k."""
+    study = load_study()
+    cfg = json.loads(study.user_attrs["settings"])
+    cfg.update({"trial_index": k, "model_action": "save", "export_strategy": "merge",
+                "checkpoint_action": "continue", "save_directory": MODEL_DIR})
+    study.set_user_attr("settings", json.dumps(cfg))
+    log(f"stored settings set for export: trial_index {k}, merge, save to {MODEL_DIR}")
+
+
+def pick_trial():
+    """Replicate Heretic's Pareto sort and pick lowest KL within REFUSAL_SLACK of the fewest refusals."""
+    study = load_study()
 
     def scores(t):
         return {s["name"]: s["score"]["value"] for s in t.user_attrs["scores"]}
@@ -219,18 +234,35 @@ def main():
     run(f"chmod +x {qbin} {pbin}")
 
     # ---- 1. optimize (no export) ---------------------------------------------------------------
-    heretic(["--dtypes", json.dumps(dtypes),
-             "--n-trials", str(N_TRIALS), "--n-startup-trials", str(N_STARTUP_TRIALS), "--seed", str(SEED),
-             "--checkpoint-action", "restart", "--trial-index", "0", "--model-action", ""],
-            logfile=f"{WORK}/heretic_optimize.log")
+    if RESUME:
+        import glob
+        import shutil
+        found = glob.glob("/kaggle/input/**/*.jsonl", recursive=True)
+        assert len(found) == 1, f"RESUME: expected one checkpoint .jsonl under /kaggle/input, found {found}"
+        os.makedirs(CKPT, exist_ok=True)
+        shutil.copy(found[0], CKPT)
+        log(f"resuming finished study {found[0]}")
+    else:
+        heretic(["--dtypes", json.dumps(dtypes),
+                 "--n-trials", str(N_TRIALS), "--n-startup-trials", str(N_STARTUP_TRIALS), "--seed", str(SEED),
+                 "--checkpoint-action", "restart", "--trial-index", "0", "--model-action", ""],
+                logfile=f"{WORK}/heretic_optimize.log")
 
     # ---- 2. pick -----------------------------------------------------------------------------------
     k, pick = pick_trial()
 
     # ---- 3. export the chosen trial (merged) ------------------------------------------------------
-    heretic(["--checkpoint-action", "continue", "--trial-index", str(k), "--model-action", "save",
-             "--export-strategy", "merge", "--save-directory", MODEL_DIR],
-            logfile=f"{WORK}/heretic_export.log")
+    # On "continue" Heretic replaces ALL settings with the copy stored in the study (phase 1 stored
+    # trial_index 0 and model_action ""; save_directory is never stored), so CLI flags are ignored:
+    # write the export settings into the stored copy first (kernel v3 restored trial 66 and saved nothing).
+    set_export_settings(k)
+    heretic(["--checkpoint-action", "continue"], logfile=f"{WORK}/heretic_export.log")
+    want = pick["front"][k]["trial"]
+    with open(f"{WORK}/heretic_export.log", encoding="utf-8") as f:
+        restored = [l for l in f if l.startswith("Restoring model from trial")]
+    log(f"export restored: {restored[-1].strip() if restored else 'nothing'} (wanted trial {want})")
+    assert restored and restored[-1].split()[-1].rstrip(".") == str(want), "Heretic restored a different trial"
+    assert os.path.exists(f"{MODEL_DIR}/config.json"), f"Heretic saved nothing to {MODEL_DIR}"
     run(f"ls -la {MODEL_DIR}; du -sh {MODEL_DIR}", check=False)
 
     # ---- 4. GGUF ------------------------------------------------------------------------------------

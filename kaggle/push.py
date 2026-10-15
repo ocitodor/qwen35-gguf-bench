@@ -68,7 +68,11 @@ def push(a):
         "OUT_NAME": f'"Qwen3.5-{a.size}-heretic-ara"',
         "UPLOAD_REPO": f'"{a.upload_repo or ""}"',
         "UPLOAD_PRIVATE": "False" if a.public_upload else "True",
+        "RESUME": "True" if a.resume_from else "False",
     }
+    sources = []
+    if a.resume_from:
+        sources = [make_checkpoint_dataset(user, a.size, a.resume_from)]
     for name, value in subs.items():
         src, n = re.subn(rf"^{name} = .*?(\s+#.*)?$", lambda m: f"{name} = {value}{m.group(1) or ''}", src, count=1, flags=re.M)
         assert n == 1, name
@@ -85,7 +89,7 @@ def push(a):
         "enable_gpu": True,
         "enable_internet": True,
         "machine_shape": "NvidiaTeslaT4",
-        "dataset_sources": [], "competition_sources": [], "kernel_sources": [], "model_sources": [],
+        "dataset_sources": sources, "competition_sources": [], "kernel_sources": [], "model_sources": [],
     }
     with open(os.path.join(tmp, "kernel-metadata.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -94,6 +98,22 @@ def push(a):
     rc = kaggle("kernels", "push", "-p", tmp)
     shutil.rmtree(tmp, ignore_errors=True)
     return rc
+
+
+def make_checkpoint_dataset(user, size, jsonl):
+    """Upload a finished Heretic study (.jsonl) as a private Kaggle dataset; return its id."""
+    ds = f"{user}/{slug(size)}-checkpoint"
+    tmp = tempfile.mkdtemp(prefix="kaggle-ds-")
+    shutil.copy(jsonl, tmp)
+    with open(os.path.join(tmp, "dataset-metadata.json"), "w", encoding="utf-8") as f:
+        json.dump({"title": f"{slug(size)}-checkpoint", "id": ds, "licenses": [{"name": "other"}]}, f)
+    exists = kaggle("datasets", "status", ds) == 0
+    rc = (kaggle("datasets", "version", "-p", tmp, "-m", "checkpoint") if exists
+          else kaggle("datasets", "create", "-p", tmp))
+    shutil.rmtree(tmp, ignore_errors=True)
+    if rc:
+        sys.exit(f"could not upload the checkpoint dataset {ds}")
+    return ds
 
 
 def status(a):
@@ -149,6 +169,8 @@ def main():
         if name == "push":
             p.add_argument("--upload-repo", default="")
             p.add_argument("--public-upload", action="store_true")
+            p.add_argument("--resume-from", default="",
+                           help="a finished study .jsonl (from `output`): skip the trials, only pick + export + GGUF")
         if name in ("output", "upload"):
             p.add_argument("--dest", required=True)
         if name == "upload":
