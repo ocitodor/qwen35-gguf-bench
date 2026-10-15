@@ -268,7 +268,10 @@ def main():
     # ---- 4. GGUF ------------------------------------------------------------------------------------
     bf16 = f"{TMP}/{OUT_NAME}.bf16.gguf"
     q4 = f"{WORK}/{OUT_NAME}.Q4_K_M.gguf"
-    run([sys.executable, f"{TMP}/llama.cpp/convert_hf_to_gguf.py", MODEL_DIR, "--outtype", "bf16", "--outfile", bf16],
+    # --no-mtp: Qwen3.5's config declares an MTP (multi-token prediction) layer, but Heretic's merged
+    # save comes from transformers, which never loads mtp.* weights, so the folder has none. Without the
+    # flag the converter still counts 33 blocks and llama.cpp fails on 'blk.32.attn_norm.weight' (v4 GGUF).
+    run([sys.executable, f"{TMP}/llama.cpp/convert_hf_to_gguf.py", MODEL_DIR, "--outtype", "bf16", "--no-mtp", "--outfile", bf16],
         logfile=f"{WORK}/convert.log")
     run([qbin, bf16, q4, "Q4_K_M"], logfile=f"{WORK}/quantize.log")
     os.remove(bf16)
